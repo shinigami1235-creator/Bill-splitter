@@ -1,7 +1,7 @@
 /* Bump CACHE_VERSION on every deploy. Browsers keep serving the old build
    until this string changes. The photo reader under vendor/tesseract is
    cached on the first scan rather than at install, since it runs to about 7MB. */
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE = `bill-splitter-${CACHE_VERSION}`;
 const FILES = [
   './',

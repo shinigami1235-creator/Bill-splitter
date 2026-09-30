@@ -245,8 +245,49 @@ body.turning .bar, body.turning .steps { display: none; }
 pre.raw { white-space: pre-wrap; font-size: 12px; line-height: 16px; background: var(--app); padding: 8px; border-radius: 6px; max-height: 240px; overflow: auto; }
 details.rawbox summary { cursor: pointer; color: var(--primary); min-height: 36px; display: flex; align-items: center; }
 
+
+.sum-row.subtotal { font-weight: 600; border-top: 1px solid var(--line-strong); margin-top: 4px; padding: 10px 0 2px; }
+.presets { margin-bottom: 8px; }
+.charge-row { border-top: 1px solid var(--line); padding: 8px 0 4px; }
+.charge-line {
+  display: grid; grid-template-columns: 96px auto minmax(0, 1fr) 40px; gap: 6px; align-items: center;
+  grid-template-areas: "name name name del" "val unit amt amt";
+}
+.charge-line > input:not(.money) { grid-area: name; font-weight: 600; }
+.charge-line > input.money { grid-area: val; }
+.charge-line > .seg { grid-area: unit; }
+.charge-line > .charge-amt { grid-area: amt; text-align: right; font-size: 16px; }
+.charge-line > .icon-btn { grid-area: del; }
+.charge-line .seg button { min-height: 44px; padding: 0 12px; }
+.charge-sum {
+  width: 100%; display: flex; justify-content: space-between; gap: 10px; align-items: center;
+  min-height: 36px; margin-top: 4px; padding: 0 2px; border: 0; background: none; cursor: pointer;
+  text-align: left; font-size: 13px; color: var(--muted);
+}
+.charge-sum.bad { color: var(--danger); }
+.charge-sum .more { color: var(--primary); font-weight: 600; flex: 0 0 auto; }
+.charge-opts { background: var(--app); border-radius: 8px; padding: 10px; margin: 4px 0 6px; }
+.charge-opts .field { margin-bottom: 10px; }
+.charge-opts .switch { margin-bottom: 4px; }
+.total-card .sum-row { font-size: 15px; }
+.total-card .sum-row.total { font-size: 20px; line-height: 28px; }
+.banner { background: #FBF3E2; border-color: var(--gold); }
+.banner p { margin: 0 0 6px; }
+.banner p:last-child { margin: 0; }
+.banner .bad { color: var(--danger); }
+.result-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.result-controls .field { margin: 0; }
+.result.giving { border-color: var(--gold); box-shadow: inset 5px 0 0 var(--gold); background: #FFFCF5; }
+.result.getting { box-shadow: inset 5px 0 0 var(--ok); }
+.result.covered .amount { color: var(--muted); }
+.tag { display: inline-block; border-radius: 12px; padding: 1px 9px; font-weight: 600; font-size: 13px; margin: 2px 0; }
+.tag.give { background: var(--gold); color: var(--navy); }
+.tag.get { background: var(--ok-tint); color: var(--ok); }
+.result .notes { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+
 @media (max-width: 380px) {
   .add-row .money, .list .money { flex-basis: 92px; }
+  .charge-line { grid-template-columns: 84px auto minmax(0, 1fr) 36px; }
 }
 </style>
 </head>

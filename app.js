@@ -2,7 +2,8 @@ import { compute, num, hasValue, minorUnits } from './split.js';
 import { scanBill } from './ocr.js';
 
 const KEY = 'bill-splitter:v1';
-const STEPS = ['People', 'Bill', 'Charges', 'Claim', 'Totals'];
+const STEPS = ['People', 'Bill', 'Claim', 'Totals'];
+const CLAIM = 2;
 const CURRENCIES = [
   ['PHP', 'Philippine peso'], ['THB', 'Thai baht'], ['USD', 'US dollar'], ['SGD', 'Singapore dollar'],
   ['HKD', 'Hong Kong dollar'], ['MYR', 'Malaysian ringgit'], ['IDR', 'Indonesian rupiah'], ['VND', 'Vietnamese dong'],
@@ -27,15 +28,20 @@ function guessCurrency() {
 
 function fresh(people = []) {
   return {
-    v: 1, currency: guessCurrency(), people, items: [], charges: [], paidBy: {}, putIn: {},
-    billTotal: '', step: people.length ? 1 : 0, turn: null, handoff: false, done: [],
+    v: 2, currency: guessCurrency(), people, items: [], charges: [], paidBy: {}, putIn: {},
+    step: people.length ? 1 : 0, turn: null, handoff: false, done: [],
   };
 }
 
 function load() {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY));
-    if (saved && saved.v === 1) return { ...fresh(), ...saved };
+    if (saved && saved.v === 1) {
+      // Version 1 had Charges as its own step between Bill and Claim.
+      saved.step = [0, 1, 1, 2, 3][saved.step] ?? 0;
+      saved.v = 2;
+    }
+    if (saved && saved.v === 2) return { ...fresh(), ...saved, step: Math.min(saved.step || 0, 3) };
   } catch { /* private window or blocked storage */ }
   return fresh();
 }
@@ -43,6 +49,7 @@ function load() {
 let state = load();
 let scan = null;
 let newBillArmed = null;
+const openCharges = new Set();
 
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage full or blocked */ }
@@ -83,17 +90,17 @@ const sheet = document.getElementById('sheet');
 const sheetIn = document.getElementById('sheet-in');
 
 function render(focusId) {
-  const turning = state.step === 3 && state.turn;
+  const turning = state.step === CLAIM && state.turn;
   document.body.classList.toggle('turning', !!turning);
   renderSteps();
-  view.innerHTML = [renderPeople, renderBill, renderCharges, renderClaim, renderTotals][state.step]();
+  view.innerHTML = [renderPeople, renderBill, renderClaim, renderTotals][state.step]();
   renderBar();
   live();
   if (focusId) document.getElementById(focusId)?.focus();
 }
 
 function renderSteps() {
-  const counts = [state.people.length, state.items.length, state.charges.length, null, null];
+  const counts = [state.people.length, state.items.length + state.charges.length, null, null];
   steps.innerHTML = STEPS.map((label, i) => `<button class="step${i === state.step ? ' on' : ''}" data-step="${i}">${label}${counts[i] ? `<span class="n">${counts[i]}</span>` : ''}</button>`).join('');
 }
 
@@ -121,14 +128,39 @@ function renderPeople() {
 }
 
 function renderBill() {
+  const sym = esc(symbol());
   const rows = state.items.map((it) => `
     <li><input type="text" data-in="item-name" data-id="${it.id}" value="${esc(it.name)}" aria-label="Item">
     <input type="text" class="money" inputmode="decimal" data-in="item-price" data-id="${it.id}" value="${esc(plain(it.price))}" aria-label="Price of ${esc(it.name)}">
     <button class="icon-btn" data-act="del-item" data-id="${it.id}" aria-label="Remove ${esc(it.name)}">×</button></li>`).join('');
-  const options = CURRENCIES.map(([code, label]) => `<option value="${code}"${code === state.currency ? ' selected' : ''}>${code} ${label}</option>`).join('');
+  const options = CURRENCIES.map(([code, label]) => `<option value="${code}"${code === state.currency ? ' selected' : ''} title="${label}">${code}</option>`).join('');
+  const presets = [['service', 'Service 10%'], ['vat12', 'VAT 12%'], ['vat7', 'VAT 7%'], ['tip', 'Tip'], ['venue', 'Venue fee'], ['other', 'Other']]
+    .map(([key, label]) => `<button class="chip" data-act="add-charge" data-preset="${key}">+ ${label}</button>`).join('');
+  const charges = state.charges.map((c) => {
+    const seg = (field, opts) => `<div class="seg wide">${opts.map(([val, label]) => `<button data-act="charge-set" data-id="${c.id}" data-field="${field}" data-val="${val}" class="${String(c[field] ?? false) === String(val) ? 'on' : ''}">${label}</button>`).join('')}</div>`;
+    const chips = state.people.map((p) => `<button class="chip${(c.excluded || []).includes(p.id) ? '' : ' on'}" data-act="charge-person" data-id="${c.id}" data-person="${p.id}">${esc(p.name)}</button>`).join('');
+    const open = openCharges.has(c.id);
+    return `
+    <div class="charge-row">
+      <div class="charge-line">
+        <input type="text" data-in="charge-name" data-id="${c.id}" value="${esc(c.name)}" aria-label="Charge name">
+        <input type="text" id="cv-${c.id}" class="money" inputmode="decimal" data-in="charge-value" data-id="${c.id}" value="${esc(plain(c.value))}" placeholder="0" aria-label="Amount of ${esc(c.name)}">
+        <div class="seg">${[['percent', '%'], ['amount', sym]].map(([val, label]) => `<button data-act="charge-set" data-id="${c.id}" data-field="unit" data-val="${val}" class="${c.unit === val ? 'on' : ''}" aria-label="${val === 'percent' ? 'Percent' : 'Fixed amount'}">${label}</button>`).join('')}</div>
+        <strong class="charge-amt money" data-live="charge-amt" data-id="${c.id}"></strong>
+        <button class="icon-btn" data-act="del-charge" data-id="${c.id}" aria-label="Remove ${esc(c.name)}">×</button>
+      </div>
+      <button class="charge-sum" data-act="charge-open" data-id="${c.id}" aria-expanded="${open}"><span data-live="charge" data-id="${c.id}"></span><span class="more">${open ? 'Hide' : 'Change'}</span></button>
+      ${open ? `<div class="charge-opts">
+        ${c.unit === 'percent' ? `<div class="field"><span class="label">Percent of</span>${seg('onTop', [['false', 'Food'], ['true', 'Food + charges above']])}</div>` : ''}
+        <label class="switch"><input type="checkbox" data-ch="charge-included" data-id="${c.id}"${c.included ? ' checked' : ''}> Already in the prices</label>
+        ${c.included ? '' : `<div class="field"><span class="label">Split</span>${seg('split', [['even', 'Even per head'], ['order', 'By what each ordered']])}</div>
+        <div class="field"><span class="label">Who pays</span><div class="chips">${chips || '<span class="muted">Add names first.</span>'}</div></div>`}
+      </div>` : ''}
+    </div>`;
+  }).join('');
   return `
   <section class="card">
-    <div class="head-row"><h2>Bill</h2><div class="grow"></div>
+    <div class="head-row"><h2>Food and drinks</h2><div class="grow"></div>
       <select data-ch="currency" aria-label="Currency" style="width:auto">${options}</select></div>
     <div class="actions">
       <label class="btn btn-primary">Scan the bill<input type="file" accept="image/*" capture="environment" data-ch="scan" hidden></label>
@@ -139,44 +171,14 @@ function renderBill() {
       <input type="text" id="item-price" class="money" inputmode="decimal" placeholder="Price" enterkeyhint="done" autocomplete="off">
       <button class="btn btn-primary" data-act="add-item">Add</button>
     </div>
-    ${rows ? `<ul class="list">${rows}</ul>` : ''}
+    ${rows ? `<ul class="list">${rows}</ul><div class="sum-row subtotal"><span>Subtotal</span><span data-live="food"></span></div>` : ''}
   </section>
   <section class="card">
-    <div class="field"><label for="bill-total">Total on the bill</label>
-      <input type="text" id="bill-total" class="money" inputmode="decimal" data-in="bill-total" value="${esc(state.billTotal)}" placeholder="Example: 2,494.46"></div>
-    <p class="check" data-live="check"></p>
-  </section>`;
-}
-
-function renderCharges() {
-  const sym = esc(symbol());
-  const presets = [['service', 'Service charge 10%'], ['vat12', 'VAT 12%'], ['vat7', 'VAT 7%'], ['tip', 'Tip'], ['venue', 'Venue fee'], ['other', 'Other']]
-    .map(([key, label]) => `<button class="btn btn-small" data-act="add-charge" data-preset="${key}">+ ${label}</button>`).join('');
-  const cards = state.charges.map((c) => {
-    const seg = (field, options) => `<div class="seg wide">${options.map(([val, label]) => `<button data-act="charge-set" data-id="${c.id}" data-field="${field}" data-val="${val}" class="${String(c[field] ?? '') === String(val) ? 'on' : ''}">${label}</button>`).join('')}</div>`;
-    const chips = state.people.map((p) => `<button class="chip${(c.excluded || []).includes(p.id) ? '' : ' on'}" data-act="charge-person" data-id="${c.id}" data-person="${p.id}">${esc(p.name)}</button>`).join('');
-    return `
-    <article class="card">
-      <div class="head-row"><input type="text" class="charge-title" data-in="charge-name" data-id="${c.id}" value="${esc(c.name)}" aria-label="Charge name">
-        <button class="icon-btn" data-act="del-charge" data-id="${c.id}" aria-label="Remove ${esc(c.name)}">×</button></div>
-      <div class="field"><span class="label">Amount</span>
-        <div class="joined"><input type="text" class="money" inputmode="decimal" data-in="charge-value" data-id="${c.id}" value="${esc(plain(c.value))}" aria-label="Amount of ${esc(c.name)}">
-        <div class="seg">${[['percent', '%'], ['amount', sym]].map(([val, label]) => `<button data-act="charge-set" data-id="${c.id}" data-field="unit" data-val="${val}" class="${c.unit === val ? 'on' : ''}">${label}</button>`).join('')}</div></div></div>
-      ${c.unit === 'percent' ? `<div class="field"><span class="label">Percent of</span>${seg('onTop', [['false', 'Food'], ['true', 'Food + charges above']])}</div>` : ''}
-      <label class="switch"><input type="checkbox" data-ch="charge-included" data-id="${c.id}"${c.included ? ' checked' : ''}> Already in the prices</label>
-      ${c.included ? '' : `
-      <div class="field"><span class="label">Split</span>${seg('split', [['even', 'Even per head'], ['order', 'By what each ordered']])}</div>
-      <div class="field"><span class="label">Who pays</span><div class="chips">${chips || '<span class="muted">Add names first.</span>'}</div></div>`}
-      <p class="live" data-live="charge" data-id="${c.id}"></p>
-    </article>`;
-  }).join('');
-  return `
-  <section class="card">
-    <h2>Charges</h2>
-    <div class="presets">${presets}</div>
+    <h2>Other charges</h2>
+    <div class="chips presets">${presets}</div>
+    ${charges}
   </section>
-  ${cards}
-  <section class="card" data-live="summary"></section>`;
+  <section class="card total-card" data-live="summary"></section>`;
 }
 
 function renderClaim() {
@@ -242,102 +244,133 @@ function renderClaim() {
 function renderTotals() {
   if (!state.people.length) return '<section class="card"><h2>Totals</h2><p>Add names first.</p><button class="btn" data-go="0">Go to People</button></section>';
   const r = compute(state);
-  const options = (id) => [`<option value="">Themselves</option>`]
-    .concat(state.people.filter((p) => p.id !== id).map((p) => `<option value="${p.id}"${state.paidBy[id] === p.id ? ' selected' : ''}>${esc(p.name)}</option>`)).join('');
-  const rows = r.people.map((p) => `
-    <div class="adjust-row">
-      <span class="who">${esc(p.name)}</span>
-      <div class="field"><label for="pb-${p.id}">Paid by</label><select id="pb-${p.id}" data-ch="paid-by" data-id="${p.id}">${options(p.id)}</select></div>
-      <div class="field"><label for="pi-${p.id}">Putting in</label><input type="text" id="pi-${p.id}" class="money" inputmode="decimal" data-in="put-in" data-id="${p.id}"
-        value="${esc(plain(state.putIn[p.id]))}" placeholder="${esc(p.coveredBy ? '' : money(p.due))}"${p.coveredBy ? ' disabled' : ''}></div>
-    </div>`).join('');
-  return `
-  <div data-live="results"></div>
-  <section class="card">
-    <h2>Adjust</h2>
-    <p class="muted">Pick who pays for whom, and enter an amount for anyone putting in more or less than their share.</p>
-    ${rows}
-  </section>`;
-}
-
-function resultsHtml() {
-  const r = compute(state);
   const blocking = r.problems.filter((p) => p.type === 'unclaimed' || p.type === 'nopayer');
   if (blocking.length) {
     const unclaimed = blocking.filter((p) => p.type === 'unclaimed').map((p) => esc(p.name));
     const nopayer = blocking.filter((p) => p.type === 'nopayer').map((p) => esc(p.name));
     return `<section class="card"><h2>Totals</h2>
-      ${unclaimed.length ? `<p class="check bad">Nobody has ticked ${listNames(unclaimed)}.</p><p><button class="btn" data-go="3">Go to Claim</button></p>` : ''}
-      ${nopayer.length ? `<p class="check bad">Nobody is ticked to pay ${listNames(nopayer)}.</p><p><button class="btn" data-go="2">Go to Charges</button></p>` : ''}
+      ${unclaimed.length ? `<p class="check bad">Nobody has ticked ${listNames(unclaimed)}.</p><p><button class="btn" data-go="${CLAIM}">Go to Claim</button></p>` : ''}
+      ${nopayer.length ? `<p class="check bad">Nobody is ticked to pay ${listNames(nopayer)}.</p><p><button class="btn" data-go="1">Go to Bill</button></p>` : ''}
     </section>`;
   }
-  const cards = r.people.map((p) => {
-    const notes = [];
-    if (p.coveredBy) notes.push(`Paid by ${esc(nameOf(p.coveredBy))}`);
-    if (p.covers.length) notes.push(`Covers ${esc(listNames(p.covers.map(nameOf)))}`);
-    if (p.putIn !== null) notes.push(`Putting in ${money(p.putIn)}`);
-    if (p.changeBack > 1e-9) notes.push(`Gets ${money(p.changeBack)} back`);
-    if (p.adjust < -1e-9) notes.push(`${money(-p.adjust)} off from what ${esc(listNames(p.adjustFrom.map(nameOf)))} put in`);
-    if (p.adjust > 1e-9) notes.push(`${money(p.adjust)} more since ${esc(listNames(p.adjustFrom.map(nameOf)))} put in less`);
-    const lines = p.lines.map((l) => {
-      const label = l.kind === 'item' ? `${esc(l.name)}${l.ways > 1 ? ` <span class="muted">÷ ${l.ways}</span>` : ''}`
-        : l.kind === 'covers' ? `${esc(l.name)}'s share` : esc(l.name);
-      return `<div class="sum-row"><span>${label}</span><span>${money(l.amount)}</span></div>`;
-    }).join('');
-    const adjustLine = Math.abs(p.adjust) > 1e-9 ? `<div class="sum-row"><span>Adjustment</span><span>${p.adjust < 0 ? '−' : ''}${money(Math.abs(p.adjust))}</span></div>` : '';
-    return `<article class="result">
-      <div class="result-top"><span class="who">${esc(p.name)}</span><span class="amount">${money(p.final)}</span></div>
-      ${notes.length ? `<p class="notes">${notes.join(' · ')}</p>` : ''}
-      ${lines || adjustLine ? `<details><summary>Breakdown</summary>${lines}${adjustLine}</details>` : ''}
-    </article>`;
-  }).join('');
-  const collected = r.people.reduce((a, p) => a + p.final, 0);
-  const printed = hasValue(state.billTotal) ? num(state.billTotal) : null;
-  return `<section class="card"><h2>Totals</h2>
+  const options = (id) => ['<option value="">Themselves</option>']
+    .concat(state.people.filter((p) => p.id !== id).map((p) => `<option value="${p.id}"${state.paidBy[id] === p.id ? ' selected' : ''}>${esc(p.name)}</option>`)).join('');
+  const cards = r.people.map((p) => `
+    <article class="result" data-live="card" data-id="${p.id}">
+      <div class="result-top"><span class="who">${esc(p.name)}</span><span class="amount" data-live="amount" data-id="${p.id}"></span></div>
+      <p class="notes" data-live="notes" data-id="${p.id}"></p>
+      <div class="result-controls">
+        <div class="field"><label for="pb-${p.id}">Paid by</label><select id="pb-${p.id}" data-ch="paid-by" data-id="${p.id}">${options(p.id)}</select></div>
+        <div class="field"><label for="pi-${p.id}">Putting in</label><input type="text" id="pi-${p.id}" class="money" inputmode="decimal" data-in="put-in" data-id="${p.id}"
+          value="${esc(plain(state.putIn[p.id]))}" placeholder="${p.coveredBy ? '' : esc(money(p.due))}"${p.coveredBy ? ' disabled' : ''}></div>
+      </div>
+      <details><summary>Breakdown</summary><div data-live="lines" data-id="${p.id}"></div></details>
+    </article>`).join('');
+  return `
+  <div data-live="banner"></div>
+  <section class="card">
+    <h2>Totals</h2>
+    <p class="muted">Enter an amount under Putting in when someone pays more than their share, and the extra comes off everyone else.</p>
     ${cards}
-    <div class="sum-row total"><span>Bill</span><span>${money(r.total)}</span></div>
-    <div class="sum-row"><span class="muted">Collected</span><span>${money(collected)}</span></div>
-    ${r.change > 1e-9 ? `<div class="sum-row"><span class="muted">Change back</span><span>${money(r.change)}</span></div>` : ''}
-    ${r.short > 1e-9 ? `<p class="check bad">Short by ${money(r.short)}.</p>` : ''}
-    ${printed !== null && !close(printed, r.total) ? `<p class="check bad">The bill says ${money(printed)}, a difference of ${money(Math.abs(printed - r.total))}.</p>` : ''}
+    <div data-live="foot"></div>
   </section>`;
+}
+
+// Who put in more or less than their share, and where the difference went.
+function bannerHtml(r) {
+  const givers = r.people.filter((p) => p.putIn !== null && Math.abs(p.putIn - p.due) > 1e-9);
+  if (!givers.length) return '';
+  const lines = givers.map((p) => {
+    const gap = p.putIn - p.due;
+    return `<p><strong>${esc(p.name)}</strong> is putting in <strong>${money(p.putIn)}</strong>, ${money(Math.abs(gap))} ${gap > 0 ? 'more' : 'less'} than their share of ${money(p.due)}.</p>`;
+  });
+  const groups = new Map();
+  for (const p of r.people) {
+    if (Math.abs(p.adjust) < 1e-9) continue;
+    const key = money(Math.abs(p.adjust)) + (p.adjust < 0 ? '-' : '+');
+    if (!groups.has(key)) groups.set(key, { amount: Math.abs(p.adjust), less: p.adjust < 0, names: [] });
+    groups.get(key).names.push(esc(p.name));
+  }
+  for (const g of groups.values()) {
+    lines.push(`<p>${listNames(g.names)} ${g.names.length === 1 ? 'pays' : 'each pay'} <strong>${money(g.amount)} ${g.less ? 'less' : 'more'}</strong>.</p>`);
+  }
+  for (const p of r.people) if (p.changeBack > 1e-9) lines.push(`<p>${esc(p.name)} gets <strong>${money(p.changeBack)}</strong> back.</p>`);
+  if (r.short > 1e-9) lines.push(`<p class="bad">Short by ${money(r.short)}.</p>`);
+  return `<section class="card banner">${lines.join('')}</section>`;
 }
 
 // Parts that change while someone types, updated without rebuilding inputs.
 function live() {
   const r = compute(state);
+  const person = (id) => r.people.find((p) => p.id === id);
   for (const el of view.querySelectorAll('[data-live]')) {
     const kind = el.dataset.live;
-    if (kind === 'check') {
-      const printed = hasValue(state.billTotal) ? num(state.billTotal) : null;
-      if (printed === null) {
-        el.className = 'check plain';
-        el.textContent = `Items and charges come to ${money(r.total)}.`;
-      } else if (close(printed, r.total)) {
-        el.className = 'check ok';
-        el.textContent = `Items and charges come to ${money(r.total)} and match the bill.`;
-      } else {
-        el.className = 'check bad';
-        el.textContent = `Items and charges come to ${money(r.total)} while the bill says ${money(printed)}, a difference of ${money(Math.abs(printed - r.total))}.`;
-      }
-    } else if (kind === 'charge') {
-      const i = state.charges.findIndex((c) => c.id === el.dataset.id);
+    const id = el.dataset.id;
+    if (kind === 'charge') {
+      const i = state.charges.findIndex((c) => c.id === id);
       const c = state.charges[i];
       const amount = r.charges[i]?.amount || 0;
-      const payers = state.people.filter((p) => !(c.excluded || []).includes(p.id)).length;
-      el.classList.remove('bad');
-      if (c.included) el.textContent = `${money(amount)} already in the prices.`;
-      else if (!payers && amount) { el.textContent = 'Tick at least one person.'; el.classList.add('bad'); }
-      else el.textContent = `${money(amount)}, ${c.split === 'order' ? 'by what each ordered' : 'even per head'} across ${payers} ${payers === 1 ? 'person' : 'people'}.`;
+      const off = state.people.filter((p) => (c.excluded || []).includes(p.id)).map((p) => p.name);
+      const on = state.people.filter((p) => !(c.excluded || []).includes(p.id)).map((p) => p.name);
+      let who = 'everyone';
+      if (!on.length) who = 'nobody ticked';
+      else if (off.length && off.length < on.length) who = `everyone but ${listNames(off)}`;
+      else if (off.length) who = `${listNames(on)} only`;
+      el.parentElement.classList.toggle('bad', !c.included && !on.length && !!amount);
+      el.textContent = c.included
+        ? 'Already in the prices'
+        : `${c.split === 'order' ? 'By what each ordered' : 'Even per head'} · ${who}`;
+    } else if (kind === 'charge-amt') {
+      const i = state.charges.findIndex((c) => c.id === id);
+      el.textContent = money(r.charges[i]?.amount || 0);
+      el.classList.toggle('muted', !!state.charges[i]?.included);
+    } else if (kind === 'food') {
+      el.textContent = money(r.subtotal);
     } else if (kind === 'summary') {
-      const rows = r.charges.map((c) => `<div class="sum-row"><span>${esc(c.name)}${c.included ? ' <span class="muted">in the prices</span>' : ''}</span><span>${money(c.amount)}</span></div>`).join('');
-      el.innerHTML = `<div class="sum-row"><span>Food</span><span>${money(r.subtotal)}</span></div>${rows}
+      const rows = r.charges.map((c) => `<div class="sum-row"><span>${esc(c.name)}${c.included ? ' <span class="muted">in the prices</span>' : ''}</span><span>${c.included ? '' : money(c.amount)}</span></div>`).join('');
+      el.innerHTML = `<div class="sum-row"><span>Food and drinks</span><span>${money(r.subtotal)}</span></div>${rows}
         <div class="sum-row total"><span>Total</span><span>${money(r.total)}</span></div>`;
     } else if (kind === 'mine') {
-      const me = r.people.find((p) => p.id === state.turn);
+      const me = person(state.turn);
       el.textContent = me ? `Your items ${money(me.food)}` : '';
-    } else if (kind === 'results') {
-      el.innerHTML = resultsHtml();
+    } else if (kind === 'banner') {
+      el.innerHTML = bannerHtml(r);
+    } else if (kind === 'card') {
+      const p = person(id);
+      if (!p) continue;
+      el.classList.toggle('giving', p.putIn !== null);
+      el.classList.toggle('getting', p.adjust < -1e-9);
+      el.classList.toggle('covered', !!p.coveredBy);
+    } else if (kind === 'amount') {
+      const p = person(id);
+      if (p) el.textContent = money(p.final);
+    } else if (kind === 'notes') {
+      const p = person(id);
+      if (!p) continue;
+      const notes = [];
+      if (p.coveredBy) notes.push(`Paid by ${esc(nameOf(p.coveredBy))}`);
+      if (p.covers.length) notes.push(`Covers ${esc(listNames(p.covers.map(nameOf)))}`);
+      if (p.putIn !== null) notes.push(`<span class="tag give">Putting in ${money(p.putIn)}</span>`);
+      if (p.changeBack > 1e-9) notes.push(`Gets ${money(p.changeBack)} back`);
+      if (p.adjust < -1e-9) notes.push(`<span class="tag get">${money(-p.adjust)} off from what ${esc(listNames(p.adjustFrom.map(nameOf)))} put in</span>`);
+      if (p.adjust > 1e-9) notes.push(`${money(p.adjust)} more since ${esc(listNames(p.adjustFrom.map(nameOf)))} put in less`);
+      el.innerHTML = notes.join(' ');
+      el.hidden = !notes.length;
+    } else if (kind === 'lines') {
+      const p = person(id);
+      if (!p) continue;
+      const lines = p.lines.map((l) => {
+        const label = l.kind === 'item' ? `${esc(l.name)}${l.ways > 1 ? ` <span class="muted">÷ ${l.ways}</span>` : ''}`
+          : l.kind === 'covers' ? `${esc(l.name)}'s share` : esc(l.name);
+        return `<div class="sum-row"><span>${label}</span><span>${money(l.amount)}</span></div>`;
+      }).join('');
+      const adjust = Math.abs(p.adjust) > 1e-9 ? `<div class="sum-row"><span>Extra from others</span><span>${p.adjust < 0 ? '−' : '+'}${money(Math.abs(p.adjust))}</span></div>` : '';
+      el.innerHTML = lines + adjust || '<span class="muted">Nothing ticked.</span>';
+    } else if (kind === 'foot') {
+      const collected = r.people.reduce((a, p) => a + p.final, 0);
+      el.innerHTML = `<div class="sum-row total"><span>Bill</span><span>${money(r.total)}</span></div>
+        <div class="sum-row"><span class="muted">Collected</span><span>${money(collected)}</span></div>
+        ${r.change > 1e-9 ? `<div class="sum-row"><span class="muted">Change back</span><span>${money(r.change)}</span></div>` : ''}`;
     }
   }
 }
@@ -346,7 +379,7 @@ function live() {
 
 function go(step) {
   state.step = Math.max(0, Math.min(STEPS.length - 1, step));
-  if (state.step !== 3) { state.turn = null; state.handoff = false; }
+  if (state.step !== CLAIM) { state.turn = null; state.handoff = false; }
   save();
   render();
   window.scrollTo(0, 0);
@@ -396,9 +429,15 @@ const actions = {
   'add-item': addItem,
   'del-item': (el) => { state.items = state.items.filter((it) => it.id !== el.dataset.id); save(); render(); },
   'add-charge': (el) => {
-    state.charges.push({ id: uid(), onTop: false, included: false, excluded: [], ...PRESETS[el.dataset.preset] });
-    save(); render();
-    window.scrollTo(0, document.body.scrollHeight);
+    const c = { id: uid(), onTop: false, included: false, excluded: [], ...PRESETS[el.dataset.preset] };
+    state.charges.push(c);
+    save();
+    render(hasValue(c.value) ? undefined : `cv-${c.id}`);
+  },
+  'charge-open': (el) => {
+    const id = el.dataset.id;
+    if (openCharges.has(id)) openCharges.delete(id); else openCharges.add(id);
+    render();
   },
   'del-charge': (el) => { state.charges = state.charges.filter((c) => c.id !== el.dataset.id); save(); render(); },
   'charge-set': (el) => {
@@ -463,7 +502,10 @@ const actions = {
     const date = new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
     const lines = [`Bill split, ${date}`];
     for (const p of r.people) {
-      const extra = p.coveredBy ? ` (paid by ${nameOf(p.coveredBy)})` : p.changeBack > 1e-9 ? ` (gets ${money(p.changeBack)} back)` : '';
+      let extra = '';
+      if (p.coveredBy) extra = ` (paid by ${nameOf(p.coveredBy)})`;
+      else if (p.changeBack > 1e-9) extra = ` (putting in ${money(p.putIn)}, gets ${money(p.changeBack)} back)`;
+      else if (p.putIn !== null) extra = ' (putting in)';
       lines.push(`${p.name}: ${money(p.final)}${extra}`);
     }
     lines.push(`Total: ${money(r.total)}`);
@@ -482,7 +524,6 @@ const inputs = {
   'person-name': (el) => { const p = state.people.find((x) => x.id === el.dataset.id); if (p) p.name = el.value; },
   'item-name': (el) => { const it = state.items.find((x) => x.id === el.dataset.id); if (it) it.name = el.value; },
   'item-price': (el) => { const it = state.items.find((x) => x.id === el.dataset.id); if (it) it.price = el.value.trim(); },
-  'bill-total': (el) => { state.billTotal = el.value.trim(); },
   'charge-name': (el) => { const c = state.charges.find((x) => x.id === el.dataset.id); if (c) c.name = el.value; },
   'charge-value': (el) => { const c = state.charges.find((x) => x.id === el.dataset.id); if (c) c.value = el.value.trim(); },
   'put-in': (el) => {
@@ -641,7 +682,7 @@ function renderSheet() {
     ${photo}
     ${scan.items.length ? `<h3>Items</h3>${itemRows}` : '<p class="check bad" style="margin-top:12px">No prices found. Retake the photo closer with the bill flat.</p>'}
     ${scan.charges.length ? `<h3>Charges</h3>${chargeRows}` : ''}
-    <div class="field" style="margin-top:12px"><label for="scan-total">Total on the bill</label>
+    <div class="field" style="margin-top:12px"><label for="scan-total">Total printed on the bill</label>
       <input type="text" id="scan-total" class="money" inputmode="decimal" data-sin="total" value="${esc(scan.total)}"></div>
     <p class="check ${check.cls}" data-scan-check>${esc(check.text)}</p>
     <details class="rawbox"><summary>Text read from the photo</summary><pre class="raw">${esc(scan.text)}</pre></details>
@@ -665,7 +706,6 @@ sheetIn.addEventListener('click', (e) => {
         included: !!c.included, onTop: false, split: c.kind === 'discount' ? 'even' : 'order', excluded: [],
       });
     }
-    if (hasValue(scan.total)) state.billTotal = String(num(scan.total));
     closeScan();
     save();
     render();

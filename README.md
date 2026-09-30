@@ -5,10 +5,9 @@ A PWA for splitting the bill after a night out. It covers food, venue costs, tip
 ## Steps
 
 1. **People.** Type a name and press Enter to add the next one. Names separated by commas go in all at once.
-2. **Bill.** Scan the bill with the camera, choose a photo, or type each item and price. The app adds up the lines and compares them with the total on the bill.
-3. **Charges.** Service charge, VAT, tip, venue fee or anything else, each set as a percent or a fixed amount.
-4. **Claim.** Press Start and pass the phone. Each person ticks what they had, including shared dishes, then presses Done and the next name comes up. The item list under it lets one person fix any item by tapping names, and Everyone ticks the whole table.
-5. **Totals.** One amount per person with a breakdown under each. Adjust sets who pays for whom and what anyone is putting in. Copy the totals puts the list on the clipboard for the group chat.
+2. **Bill.** Scan the bill with the camera, choose a photo, or type each item and price. Other charges sit on the same page under the food: service charge, VAT, tip, venue fee or anything else, each set as a percent or a fixed amount. Change under a charge opens its split and who pays. The total at the bottom adds up as you type.
+3. **Claim.** Press Start and pass the phone. Each person ticks what they had, including shared dishes, then presses Done and the next name comes up. The item list under it lets one person fix any item by tapping names, and Everyone ticks the whole table.
+4. **Totals.** One card per person with their amount, a Paid by choice, a Putting in field and a breakdown. Anyone putting in more gets a gold card, the people it comes off get a green mark, and a box at the top says who put in what and how much less everyone else pays. Copy the totals puts the list on the clipboard for the group chat.
 
 The bill is kept on the phone until New bill is pressed twice. New bill keeps the names.
 
@@ -27,11 +26,11 @@ The bill is kept on the phone until New bill is pressed twice. New bill keeps th
 
 Tesseract.js reads the photo in the browser, loaded from `vendor/tesseract` only when someone presses Scan. The first scan downloads about 7MB: the reader, one of the three engine builds under `core/` picked for the phone's processor, and the English data. The service worker keeps them for offline scans after that.
 
-The photo is turned grey, raised in contrast and enlarged to about 2200px before reading. Each line ending in a price becomes an item. Lines naming the subtotal, cash, change, VATable sales, TIN, table and similar are skipped. Service, VAT and discount lines become charges. The line that says Total, Grand total or Amount due fills Total on the bill.
+The photo is turned grey, raised in contrast and enlarged to about 2200px before reading. Each line ending in a price becomes an item. Lines naming the subtotal, cash, change, VATable sales, TIN, table and similar are skipped. Service, VAT and discount lines become charges. The line that says Total, Grand total or Amount due fills the printed total in the review.
 
 Service and VAT lines get Already in the prices ticked by whichever combination lands closest to the printed total. With no total read, Philippine VAT counts as in the prices and everything else is added.
 
-Every line is editable before it goes in. A misread price shows up as a difference against the printed total.
+Every line is editable before it goes in. The review compares the ticked lines with the total printed on the bill, which catches a misread price.
 
 ## Files
 
